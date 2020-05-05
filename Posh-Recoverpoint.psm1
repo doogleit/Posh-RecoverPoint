@@ -146,32 +146,47 @@ function Connect-Appliance {
         $ignorecert = $true
    }
 
-   if ($ignorecert){
+   [String]$uri = "https://$name`:$portNumber/fapi/rest/4_0"
 
-       #'---------------------------------------------------------------------------  
-       #'Bypass SSL certificate confirmation until CA signed certificates can be loaded
-       # on the appliances without causing stability issues. 
-       #'---------------------------------------------------------------------------  
-       #[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$True}  
-        add-type @"
-            using System.Net;
-            using System.Security.Cryptography.X509Certificates;
-            public class TrustAllCertsPolicy : ICertificatePolicy {
-                public bool CheckValidationResult(
-                    ServicePoint srvPoint, X509Certificate certificate,
-                    WebRequest request, int certificateProblem) {
-                    return true;
-                }
-            }
-"@
-       [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
+   # Use splatting (see help about_Splatting) to build params for Invoke-RestMetod
+   # so we can conditionally add -SkipCertificateCheck for Powershell Core
+   $RestParams = @{
+       Uri = $uri
+       Credential = $Credentials
+       Method = "Get"
    }
-   [String]$uri = "https://$name`:$portNumber/fapi/rest/4_0"  
+
+   if ($ignorecert){
+        # Use -SkipCertificateCheck in Powershell Core
+        if ($PSVersionTable.PSEdition -eq "Core") {
+            $RestParams.SkipCertificateCheck = $true
+        } else {
+            #'---------------------------------------------------------------------------  
+            #'Bypass SSL certificate confirmation until CA signed certificates can be loaded
+            # on the appliances without causing stability issues. 
+            #'---------------------------------------------------------------------------  
+            #[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$True}  
+            add-type @"
+                using System.Net;
+                using System.Security.Cryptography.X509Certificates;
+                public class TrustAllCertsPolicy : ICertificatePolicy {
+                    public bool CheckValidationResult(
+                        ServicePoint srvPoint, X509Certificate certificate,
+                        WebRequest request, int certificateProblem) {
+                        return true;
+                    }
+                }
+"@
+            [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
+        }
+   }
+
    Try{  
-      $connection = Invoke-RestMethod -uri $uri -Credential $credentials -method Get
+      $connection = Invoke-RestMethod @RestParams
       $returnobj = to-customobject -TypeName MyCustomType ([ordered]@{
                 BaseURL     = $uri
                 Credentials = $credentials
+                IgnoreCert = $ignorecert
             })
             $results += $resultobj
       $global:DefaultRPA = $returnobj
@@ -1972,7 +1987,15 @@ function Invoke-RestGet {
         try {
             $results = @()
             $URI = $DefaultRPA.BaseURL + $resource
-            return Invoke-RestMethod -uri $URI -Method Get -Credential $DefaultRPA.Credentials
+            $RestParams = @{
+                Uri = $URI
+                Credential = $DefaultRPA.Credentials
+                Method = "Get"
+            }
+            if ($DefaultRPA.IgnoreCert -and $PSVersionTable.PSEdition -eq "Core") {
+                $RestParams.SkipCertificateCheck = $true
+            }
+            return Invoke-RestMethod @RestParams
         } catch {
             Write-Debug $URI
             If ($_.Exception.Response){
@@ -2019,11 +2042,20 @@ function Invoke-RestPost {
         try {
             $results = @()
             $URI = $DefaultRPA.BaseURL + $resource
-            if (!$body){
-                return Invoke-RestMethod -uri $URI -Method Post -Credential $DefaultRPA.Credentials
-            } else {
-                return Invoke-RestMethod -uri $URI -Method Post -Credential $DefaultRPA.Credentials -ContentType "application/json" -Body $body
+            $RestParams = @{
+                Uri = $URI
+                Credential = $DefaultRPA.Credentials
+                Method = "Post"
             }
+            if ($DefaultRPA.IgnoreCert -and $PSVersionTable.PSEdition -eq "Core") {
+                $RestParams.SkipCertificateCheck = $true
+            }
+            if ($body){
+                $RestParams.ContentType = "application/json"
+                $RestParams.Body = $body
+            }
+            return Invoke-RestMethod @RestParams
+
         } catch {
             Write-Host "Error Connecting to `"$URI`""
             if ($body){
